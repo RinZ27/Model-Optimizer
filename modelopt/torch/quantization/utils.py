@@ -869,5 +869,4 @@ class LayerActivationCollector:
         finally:
             self._unpatch_and_cleanup_layer(layer)
             unpatch_forward_method(self.model, "_original_forward")
-
         return inputs
