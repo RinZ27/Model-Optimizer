@@ -1794,7 +1794,6 @@ def sequential_calibrate(
 ):
     """Sequential calibration - a sequential layer-by-layer calibration algorithm."""
     max_calibrate(model)
-
     transformer_layers = get_decoder_layers(model)
     if transformer_layers is None:
         raise ValueError(
