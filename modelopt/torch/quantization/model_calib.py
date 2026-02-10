@@ -1829,8 +1829,6 @@ def sequential_calibrate(
     **calib_kwargs,
 ):
     """Sequential calibration - a sequential layer-by-layer calibration algorithm."""
-    max_calibrate(model)
-    breakpoint()
     transformer_layers = get_decoder_layers(model)
     if transformer_layers is None:
         raise ValueError(
