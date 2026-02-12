@@ -188,6 +188,10 @@ def train():
             # When doing offline training, we need to set num_hidden_layers
             # since we override it when loading the model for space savings
             model.config.num_orig_hidden_layers = model_config.num_hidden_layers
+            if hasattr(model.config, "layer_types"):
+                del (
+                    model.config.layer_types
+                )  # remove layer_types to avoid mismatch with the modified model
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
             model_max_length=training_args.training_seq_len,

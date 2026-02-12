@@ -14,7 +14,9 @@
 # limitations under the License.
 
 import argparse
+import os
 import random
+import sys
 import time
 import warnings
 from typing import Any
@@ -72,7 +74,8 @@ from modelopt.torch.utils.memory_monitor import launch_memory_monitor
 from modelopt.torch.utils.speech_dataset_utils import get_speech_dataset_dataloader
 from modelopt.torch.utils.vlm_dataset_utils import get_vlm_dataset_dataloader
 
-from ..speculative_decoding.eagle_utils import make_eagle_supervised_data_module
+sys.path.append(os.path.join(os.path.dirname(__file__), "../speculative_decoding"))
+from eagle_utils import make_eagle_supervised_data_module
 
 RAND_SEED = 1234
 
@@ -849,6 +852,11 @@ def quantize_main(
         if args.calib_with_images:
             print("Image-text calibration enabled. Using default batch_size=1 for calibration.")
             args.batch_size = 1
+        # Speculative decoding offline model dost not support get_max_batch_size() because of
+        # the customized dataloader, so we set batch_size to 1 to avoid OOM.
+        elif args.specdec_offline_dataset is not None:
+            print("Offline speculative decoding calibration enabled. Using default batch_size=1 for calibration.")
+            args.batch_size = 1
         else:
             # Calibration/sparsification will actually take much more memory than regular inference
             # due to intermediate tensors for fake quantization. Setting sample_memory_usage_ratio
@@ -887,8 +895,8 @@ def quantize_main(
         data_args = argparse.Namespace(
             vlm_processor=None,
             vlm_img_dir=None,
-            data_path=None,
-            offline_data_path=args.specdec_offline_dataset,
+            data_path=args.specdec_offline_dataset,
+            offline_data_path=args.specdec_offline_feature,
             devlazy_preprocessice=True,
         )
         data_module = make_eagle_supervised_data_module(
@@ -1059,10 +1067,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument(
-        "--specdec_offline_dataset",
+        "--specdec_offline_feature",
         help=(
             "If set, the model is a speculative decoding model,"
             "which uses offline dataset for calibration. "
+        ),
+        default=None,
+    )
+    parser.add_argument(
+        "--specdec_offline_dataset",
+        help=(
+            "Path to the offline dataset for speculative decoding model calibration. "
+            "This should be a JSON or JSONL file or a directory with JSON or JSONL files "
+            "containing the calibration samples. "
         ),
         default=None,
     )
