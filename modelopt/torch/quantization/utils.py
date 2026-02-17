@@ -865,7 +865,6 @@ class LayerActivationCollector:
             bind_forward_method(self.model, _early_stop_forward, "_original_forward")
             self._patch_and_initialize_layer(layer, stop_after_collection=True)
             forward_loop(self.model)
-            print_rank_0(f"Layer activation getter afterget_input_activations: {len(layer.inputs)}")
             inputs = layer.inputs.copy()
         finally:
             self._unpatch_and_cleanup_layer(layer)
