@@ -138,6 +138,8 @@ def max_calibrate(
     for name, module in model.named_modules():
         if hasattr(module, "layer_sync_moe_local_experts_amax"):
             module.layer_sync_moe_local_experts_amax()
+        elif hasattr(module, "sync_moe_local_experts_amax"):
+            module.sync_moe_local_experts_amax()
 
     if not distributed_sync:
         return
@@ -1818,6 +1820,35 @@ def _set_input_quantizers_quant_mode(layer: nn.Module):
         if (
             isinstance(module, TensorQuantizer)
             and "input_quantizer" in name
+            and not module._disabled
+            and not module._dynamic
+            and module._calibrator is not None
+        ):
+            if module._calibrator.compute_amax() is not None:
+                module.load_calib_amax()
+            module.enable_quant()
+            module.disable_calib()
+
+
+def _set_kv_quantizers_calib_mode(layer: nn.Module):
+    for name, module in layer.named_modules():
+        if (
+            isinstance(module, TensorQuantizer)
+            and ("k_bmm_quantizer" in name or "v_bmm_quantizer" in name)
+            and not module._disabled
+            and not module._dynamic
+            and module._calibrator is not None
+        ):
+            module._calibrator.reset()
+            module.disable_quant()
+            module.enable_calib()
+
+
+def _set_kv_quantizers_quant_mode(layer: nn.Module):
+    for name, module in layer.named_modules():
+        if (
+            isinstance(module, TensorQuantizer)
+            and ("k_bmm_quantizer" in name or "v_bmm_quantizer" in name)
             and not module._disabled
             and not module._dynamic
             and module._calibrator is not None
