@@ -35,8 +35,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-import transformers
-from packaging.version import Version
 from torch import nn
 from torch.nn import CrossEntropyLoss
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask
@@ -75,14 +73,6 @@ IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 ENABLE_CP_TTT_PATCH = False
 # module variable to cache attention mask for cp ttt
 CACHED_SHARD_TTT_MASKS = {}
-
-
-def _get_empty_cache(config):
-    """Return an empty cache. Handle different versions of transformers for unit tests."""
-    if Version(transformers.__version__) >= Version("4.54"):
-        return DynamicCache(config=config)
-    else:
-        return DynamicCache()
 
 
 @MedusaDMRegistry.register({PreTrainedModel: "hf.PreTrainedModel"})
@@ -908,9 +898,9 @@ class HFEagleModel(EagleModel):
             )
 
         if not isinstance(past_key_values, Cache):
-            past_key_values = _get_empty_cache(self._base_llm_config)
+            past_key_values = DynamicCache(config=self._base_llm_config)
         if not isinstance(eagle_cache, Cache):
-            eagle_cache = _get_empty_cache(self.eagle_module.config)
+            eagle_cache = DynamicCache(config=self.eagle_module.config)
         past_key_values.eagle_cache = eagle_cache
 
         # ====Prepare inputs for the first eagle forward pass====
