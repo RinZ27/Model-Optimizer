@@ -162,7 +162,6 @@ _default_disabled_quantizer_cfg = {
     "default": {"enable": False},
 }
 
-
 _mamba_moe_disabled_quantizer_cfg = {
     "*fc1_latent_proj*": {"enable": False},  # Skip Latent MOE
     "*fc2_latent_proj*": {"enable": False},  # Skip Latent MOE
@@ -171,7 +170,6 @@ _mamba_moe_disabled_quantizer_cfg = {
     "*v_proj*": {"enable": False},  # Skip QKV Linear
     "*o_proj*": {"enable": False},  # Skip QKV Output Projection
 }
-
 
 INT8_DEFAULT_CFG = {
     "quant_cfg": {
@@ -266,6 +264,7 @@ INT4_BLOCKWISE_WEIGHT_ONLY_CFG = {
     },
     "algorithm": "max",
 }
+
 
 INT4_AWQ_CFG = {
     "quant_cfg": {
