@@ -67,7 +67,6 @@ class DataArguments:
     data_path: str = field(
         metadata={"help": "Path to the training data."},
     )
-    eval_data_path: str = field(default=None, metadata={"help": "Path to the evaluation data."})
     offline_data_path: str = field(
         default=None,
         metadata={
@@ -85,6 +84,10 @@ class DataArguments:
     )
     vlm_img_dir: str = field(default=None, metadata={"help": "Path to the VLM image directory."})
     vlm_processor: str = field(default=None, metadata={"help": "Path to the VLM processor."})
+    sample_size: int = field(
+        default=-1,
+        metadata={"help": "Number of samples to use for training. Use -1 to use all samples."},
+    )
 
 
 @dataclass
