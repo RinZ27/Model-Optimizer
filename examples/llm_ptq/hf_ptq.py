@@ -591,7 +591,9 @@ def export_quantized(
         # Early exit for speculative decoding checkpoints
         # No tokenizer saving needed for spec ckpts
         if has_spec_opt(full_model):
-            export_speculative_decoding(full_model, export_dir=export_path)
+            export_speculative_decoding(
+                full_model, export_dir=export_path, offline_specdec_input=offline_specdec_input
+            )
             print(f"Quantized speculative decoding checkpoint exported to: {export_path}")
             return
 
@@ -676,7 +678,6 @@ def export_quantized(
                 full_model,
                 export_dir=export_path,
                 extra_state_dict=mtp_state_dict,
-                offline_specdec_input=offline_specdec_input,
             )
 
         # Restore default padding and export the tokenizer as well.
