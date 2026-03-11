@@ -131,6 +131,8 @@ def _test_mcore_gpt_pruning(
     rank,
     size,
 ):
+    set_seed(SEED)
+
     channel_divisor = 4
 
     hidden_size = channel_divisor * 4
