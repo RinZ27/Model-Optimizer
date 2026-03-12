@@ -444,16 +444,15 @@ class _QuantSparseMoe(QuantModule):
 
     Supports ``layer_sync_moe_local_experts_amax`` to sync input quantizer amax across experts.
 
-    Optionally supports two config-driven features (disabled by default):
+    Optionally supports a config-driven feature:
     - ``_moe_calib_experts_ratio``: force-forward tokens to more experts during calibration.
-    - ``_moe_count_expert_calib_tokens``: count tokens routed to each expert during calibration.
+      When None or < 1.0, tokens routed to each expert are also counted (expert_token_count).
 
-    When both are disabled, forward is a direct pass-through with zero overhead.
+    When disabled, forward is a direct pass-through with zero overhead.
     """
 
     def _setup(self):
         self._moe_calib_experts_ratio = None
-        self._moe_count_expert_calib_tokens = False
         self._token_counting_initialized = False
 
     def _init_token_counting(self):
@@ -501,58 +500,38 @@ class _QuantSparseMoe(QuantModule):
             self.expert_token_count += counts.to(self.expert_token_count.device)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        if not self._moe_calib_experts_ratio and not self._moe_count_expert_calib_tokens:
-            return super().forward(hidden_states)
+        ratio = self._moe_calib_experts_ratio
+        count_expert_calib_tokens = ratio is None or ratio < 1.0
 
-        if self._moe_count_expert_calib_tokens and not self._token_counting_initialized:
+        if count_expert_calib_tokens and not self._token_counting_initialized:
             self._init_token_counting()
 
         is_calib = any(getattr(m, "_if_calib", False) for m in self.experts.modules())
-        self._count_expert_tokens = is_calib and self._moe_count_expert_calib_tokens
+        self._count_expert_tokens = is_calib and count_expert_calib_tokens
 
-        # If any of the experts are in calibration mode, we will forward all tokens to
-        # self._moe_calib_experts_ratio % of the experts to improve the calibration coverage.
-        # This is used only for calibration, we need to re-calculate the actual outputs again using
-        # the original top_k
-        if is_calib and self._moe_calib_experts_ratio:
-            self._count_expert_tokens = True
-            assert 0 < self._moe_calib_experts_ratio <= 1, (
-                "moe_calib_experts_ratio must be between 0 and 1"
-            )
+        # During calibration with ratio set: forward with expanded top_k so more experts get
+        # calibration data, then run again with original top_k for the actual output.
+        if is_calib and ratio:
+            assert 0 < ratio <= 1, "moe_calib_experts_ratio must be between 0 and 1"
             if TRANSFORMERS_VERSION_GE_5_0:
-                assert hasattr(self, "gate") and hasattr(self.gate, "top_k")
-                original_top_k = self.gate.top_k
-                self.gate.top_k = max(
-                    original_top_k, round(self.gate.num_experts * self._moe_calib_experts_ratio)
-                )
-                super().forward(hidden_states)
-                self.gate.top_k = original_top_k
+                top_k_owner = self.gate
+                num_experts = self.gate.num_experts
             else:
-                # Path for transformers < 5.0
-                if hasattr(self, "gate") and hasattr(self.gate, "top_k"):
-                    top_k_owner = self.gate
-                else:
-                    top_k_owner = self
-                original_top_k = top_k_owner.top_k
+                gate = getattr(self, "gate", None)
+                top_k_owner = gate if (gate is not None and hasattr(gate, "top_k")) else self
                 if hasattr(self, "num_experts"):
-                    top_k_owner.top_k = max(
-                        original_top_k, round(self.num_experts * self._moe_calib_experts_ratio)
-                    )
+                    num_experts = self.num_experts
                 elif hasattr(self, "experts"):
-                    num_experts = (
-                        self.experts.num_experts
-                        if hasattr(self.experts, "num_experts")
-                        else len(self.experts)
-                    )
-                    top_k_owner.top_k = max(
-                        original_top_k,
-                        round(num_experts * self._moe_calib_experts_ratio),
-                    )
+                    num_experts = getattr(self.experts, "num_experts", None) or len(self.experts)
                 else:
                     raise ValueError(f"Could not find num_experts in module {self}")
+            original_top_k = top_k_owner.top_k
+            top_k_owner.top_k = max(original_top_k, round(num_experts * ratio))
+            try:
                 super().forward(hidden_states)
+            finally:
                 top_k_owner.top_k = original_top_k
-            self._count_expert_tokens = False
+                self._count_expert_tokens = False
 
         output = super().forward(hidden_states)
         self._count_expert_tokens = False

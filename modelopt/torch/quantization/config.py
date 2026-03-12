@@ -636,16 +636,27 @@ NVFP4_MLP_WEIGHT_ONLY_CFG = {
     "algorithm": "max",
 }
 
-_nvfp4_mlp_only_quant_cfg = {
-    "*mlp*weight_quantizer": _nvfp4_quantizer,
-    "*mlp*input_quantizer": _nvfp4_quantizer,
+_nvfp4_experts_only_quant_cfg = {
+    "*mlp.experts*weight_quantizer": _nvfp4_quantizer,
+    "*mlp.experts*input_quantizer": _nvfp4_quantizer,
     "*block_sparse_moe*weight_quantizer": _nvfp4_quantizer,
     "*block_sparse_moe*input_quantizer": _nvfp4_quantizer,
     **_default_disabled_quantizer_cfg,
 }
 
+_nvfp4_mlp_only_quant_cfg = {
+    **_nvfp4_experts_only_quant_cfg,
+    "*mlp*weight_quantizer": _nvfp4_quantizer,
+    "*mlp*input_quantizer": _nvfp4_quantizer,
+}
+
 NVFP4_MLP_ONLY_CFG = {
     "quant_cfg": _nvfp4_mlp_only_quant_cfg,
+    "algorithm": "max",
+}
+
+NVFP4_EXPERTS_ONLY_CFG = {
+    "quant_cfg": _nvfp4_experts_only_quant_cfg,
     "algorithm": "max",
 }
 
@@ -687,6 +698,7 @@ choices: set[str] = {
     "NVFP4_MLP_WEIGHT_ONLY_CFG",
     "MXFP4_MLP_WEIGHT_ONLY_CFG",
     "NVFP4_MLP_ONLY_CFG",
+    "NVFP4_EXPERTS_ONLY_CFG",
     "NVFP4_OMLP_ONLY_CFG",
     "MAMBA_MOE_NVFP4_CONSERVATIVE_CFG",
     "MAMBA_MOE_NVFP4_AGGRESSIVE_CFG",
@@ -1047,16 +1059,6 @@ class QuantizeAlgorithmConfig(ModeloptBaseConfig):
             " pass. This forward is for calibration purpose only and will not affect the"
             " actual inference. Not supported for all MoE architectures; currently works"
             " with a few HuggingFace models such as Mixtral, Qwen3Moe, MiniMax."
-        ),
-    )
-
-    moe_count_expert_calib_tokens: bool = ModeloptField(
-        default=False,
-        title="Enable expert token counting during MoE calibration.",
-        description=(
-            "If True, counts how many tokens are routed to each expert during calibration."
-            " Not supported for all MoE architectures; currently works with a few HuggingFace"
-            " models such as Mixtral, Qwen3Moe, MiniMax."
         ),
     )
 
