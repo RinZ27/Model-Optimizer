@@ -230,11 +230,21 @@ Depth pruning reduces the number of layers (`num_layers`) in the model.
 
 - Up to **1/3rd parameter reduction** can generally result in a model above the Pareto frontier with good latency-accuracy trade-off (when using a good quality dataset for distillation with ~80-100B tokens)
 - For pruning **>50%**, use iterative pruning: compress by 30%, perform distillation, then compress again
+- To estimate importance of each layer one can run `rank_layer_importance.py` script. This script computes importance of each layer by comparing the MSE between the final hidden representation with and without that layer.
+
+```
+python  -m torch.distributed.run --nproc_per_node=2 /path/to/modelopt/examples/pruning/rank_layer_importance.py --hf_model_name_or_path /path/to/hf-checkpoint/nvidia/NVIDIA-Nemotron-Nano-12B-v2 --trust_remote_code --calib_dataset_name wikitext  --num_layers_in_first_pipeline_stage 31 --num_layers_in_last_pipeline_stage 31 --num_layers 62
+```
+ - One can also pass indices of layers that should be dropped always. This allows running an interative estimation e.g. in first iteration score all layers, pick 5 least important, and in the next iteration pass these 5 layers to be dropped, so that it ranks the rest of the layers assuming these 5 are dropped.
+```
+python  -m torch.distributed.run --nproc_per_node=2 /path/to/modelopt/examples/pruning/rank_layer_importance.py --hf_model_name_or_path /path/to/hf-checkpoint/nvidia/NVIDIA-Nemotron-Nano-12B-v2 --trust_remote_code --calib_dataset_name wikitext  --num_layers_in_first_pipeline_stage 31 --num_layers_in_last_pipeline_stage 31 --num_layers 62 --drop_layers 6 7 9 32 41
+```
 
 **Examples:**
 
 - [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) (`num_layers=36`) → 6B (`num_layers=24`)
 - [Llama-3.1-8B](https://huggingface.co/meta-llama/Llama-3.1-8B) (`num_layers=32`) → 4.5B (`num_layers=16`)
+
 
 #### Width Pruning
 
