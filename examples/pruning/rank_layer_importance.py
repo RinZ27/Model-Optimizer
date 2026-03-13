@@ -1,7 +1,46 @@
+# Adapted from https://github.com/EleutherAI/lm-evaluation-harness/tree/aa457edc3d64d81530159cd3a182932320c78f8c
+
+# MIT License
+#
+# Copyright (c) 2020 EleutherAI
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import argparse
 import json
 import os
-from typing import Dict, List, Literal, Optional, Union
+from typing import List, Optional, Union
 from collections import defaultdict
 
 import torch
@@ -14,29 +53,21 @@ from megatron.core.utils import WrappedTensor, get_model_config
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.rerun_state_machine import RerunMode, get_rerun_state_machine
 
-from megatron.bridge import AutoBridge
 from megatron.bridge.models.mamba.mamba_provider import MambaModelProvider
 from megatron.bridge.models.nemotronh.nemotron_h_provider import NemotronHModelProvider
-from transformers import AutoConfig, AutoModelForCausalLM
 
 from transformer_engine.pytorch.module.rmsnorm import RMSNorm
 from transformer_engine.pytorch.module.layernorm import LayerNorm
 
 
 from megatron.core.parallel_state import (
-    get_expert_model_parallel_rank, 
-    get_expert_model_parallel_world_size, 
     get_pipeline_model_parallel_rank, 
-    get_pipeline_model_parallel_world_size, 
-    get_tensor_model_parallel_rank, 
-    get_tensor_model_parallel_world_size, 
     get_data_parallel_rank,
     get_data_parallel_world_size,
     get_data_parallel_group,
     is_pipeline_last_stage,
 )
 
-import modelopt.torch.opt as mto
 import modelopt.torch.prune as mtp
 import modelopt.torch.utils.distributed as dist
 from modelopt.torch.utils import get_supported_datasets, num2hrb, print_rank_0, warn_rank_0, run_forward_loop
@@ -46,11 +77,6 @@ from modelopt.torch.utils.plugins.mbridge import (
 )
 from modelopt.torch.utils.plugins.megatron_mmlu import megatron_mmlu
 
-def is_first_pp_rank():
-    return get_pipeline_model_parallel_first_rank() == 0
-
-def is_first_rank():
-    return torch.distributed.get_rank() == 0
 
 kl_loss = torch.nn.KLDivLoss(reduction='batchmean', log_target=True).cuda()
 mse_loss = torch.nn.MSELoss(reduce=True, reduction='mean').cuda()
@@ -152,9 +178,7 @@ class LastHiddenImportanceHook(torch.nn.Module):
         self.hidden_distance.append( normalized_mse_loss_per_sample(hidden_out, self.reference_hidden[sample_id]).mean() )
         # if computing the distance to the teacher's logits    
         if self.lm_head:
-            # teacher_logits = gather_from_tensor_model_parallel_region(self.lm_head(self.reference_hidden[sample_id].permute(1, 0, 2))[0]).detach()
             teacher_logits = self.lm_head(self.reference_hidden[sample_id].permute(1, 0, 2))[0].detach()
-            # logits = gather_from_tensor_model_parallel_region(self.lm_head(hidden_out.permute(1, 0, 2))[0]).detach()
             logits = self.lm_head(hidden_out.permute(1, 0, 2))[0].detach()
             self.logits_distance.append( normalized_mse_loss_per_sample(logits, teacher_logits).mean() )
 
@@ -272,6 +296,8 @@ def collect_scores(unwrapped_model, use_metric: str="mse", aggregation: str="mea
             scores[i][metric] = stats[metric][i]
     print(f'{scores=}')
     pickle.dump(scores, open(f'scores.p', 'wb'))
+    print('Layers ordered by <MSE> importance:')
+    print(f'{sorted([(k,v['mse'].mean()) for k,v in scores.items() if v['mse'].numel() > 0], key=lambda x:(x[1]))=}')
                         
     return scores
 
