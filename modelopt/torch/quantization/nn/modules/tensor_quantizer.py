@@ -64,6 +64,7 @@ from ...utils import is_torch_export_mode
 from ..functional import normalized_hadamard_transform
 
 __all__ = [
+    "NVFP4StaticQuantizer",
     "SequentialQuantizer",
     "TensorQuantizer",
     "TensorQuantizerCache",
@@ -155,6 +156,10 @@ class TensorQuantizer(nn.Module):
         "_padding",
         # Extra flags added by huggingface
         "_is_hf_initialized",
+        # Extra flags added by accelerate
+        "_hf_hook",
+        "_old_forward",
+        "forward",
         # Extra flags added by deepspeed
         "ds_external_parameters",
         "all_parameters",
@@ -524,6 +529,20 @@ class TensorQuantizer(nn.Module):
             and self._fake_quant
         )
 
+    @property
+    def rotate_is_enabled(self):
+        """Check if rotate is enabled in quant config."""
+        return self._rotate.get("enable", False) if isinstance(self._rotate, dict) else self._rotate
+
+    @property
+    def rotate_is_fp32(self):
+        """Check if rotation needs to be computed in float32."""
+        return (
+            self._rotate.get("rotate_fp32", False)
+            if isinstance(self._rotate, dict) and self.rotate_is_enabled
+            else False
+        )
+
     def disable_calib(self):
         """Disable calibration."""
         self._if_calib = False
@@ -763,16 +782,6 @@ class TensorQuantizer(nn.Module):
                 getattr(self, "_onnx_quantizer_type", None),
                 self._pass_through_bwd,
             )
-        elif self._num_bits == (2, 1) and self.is_static_block_quant:
-            outputs = static_blockwise_fp4_fake_quant(
-                inputs,
-                None,  # scale
-                None,  # scale_fp8_quant_amax
-                False,  # skip_scale_quant
-                inputs.dtype,  # out_dtype
-                self._pass_through_bwd,  # pass_through_bwd
-                amax,  # amax
-            )
         elif isinstance(self._num_bits, tuple):
             # Float-point quantization, e.g., FP8
             E, M = self._num_bits  # noqa: N806
@@ -1001,8 +1010,8 @@ class TensorQuantizer(nn.Module):
             inputs = inputs * self.pre_quant_scale
 
         # Rotating the input
-        if self._rotate:
-            inputs = normalized_hadamard_transform(inputs)
+        if self.rotate_is_enabled:
+            inputs = normalized_hadamard_transform(inputs, rotate_fp32=self.rotate_is_fp32)
 
         if self._disabled:
             # if quantizer is disabled, we still need to track the input dtype for saving the model
@@ -1114,7 +1123,8 @@ class TensorQuantizer(nn.Module):
             if self.pre_quant_scale is not None
             else ""
         )
-        s += " rotated" if self._rotate else ""
+        s += " rotated" if self.rotate_is_enabled else ""
+        s += " (fp32)" if self.rotate_is_fp32 else ""
         s += (
             f" calibrator={self._calibrator.__class__.__name__}"
             if (self._calibrator is not None)
@@ -1249,6 +1259,66 @@ class TensorQuantizer(nn.Module):
             self.register_buffer(key, value)
 
 
+class NVFP4StaticQuantizer(TensorQuantizer):
+    """TensorQuantizer for NVFP4 static block quantization with two-level scaling.
+
+    Uses _global_amax and inherited _amax for per-block amax values.
+    """
+
+    @classmethod
+    def from_tensor_quantizer(
+        cls, tq: TensorQuantizer, global_amax: torch.Tensor | None = None
+    ) -> "NVFP4StaticQuantizer":
+        """Convert a TensorQuantizer to NVFP4StaticQuantizer in-place.
+
+        Args:
+            tq: The TensorQuantizer to convert.
+            global_amax: Optional global amax value to set on the quantizer.
+        """
+        if isinstance(tq, cls):
+            if global_amax is not None:
+                tq.global_amax = global_amax
+            return tq
+        tq.__class__ = cls
+        tq._is_nvfp4_static_quantizer = True
+        if global_amax is not None:
+            tq.global_amax = global_amax
+        return tq
+
+    @property
+    def global_amax(self):
+        """Return global_amax for quantization."""
+        if not hasattr(self, "_global_amax"):
+            return None
+        return self._global_amax
+
+    @global_amax.setter
+    def global_amax(self, value):
+        if value is None:
+            if hasattr(self, "_global_amax"):
+                self._global_amax = None
+            return
+        if not isinstance(value, torch.Tensor):
+            value = torch.tensor(value)
+        if not hasattr(self, "_global_amax") or self._global_amax is None:
+            self.register_buffer("_global_amax", value.clone().detach())
+        else:
+            self._global_amax.data.copy_(value.clone().detach().to(self._global_amax.device))
+
+    def _fake_quantize(self, inputs):
+        """Fake quantization using two-level scaling with _amax and _global_amax."""
+        if self.amax is not None:
+            return static_blockwise_fp4_fake_quant(
+                inputs,
+                self.amax,
+                self.global_amax,  # Can be None, will be computed internally
+                True,  # quantize_block_scales
+                inputs.dtype,
+                self._pass_through_bwd,
+            )
+        return super()._fake_quantize(inputs)
+
+
 class SequentialQuantizer(nn.Sequential):
     """A sequential container for  :class:`TensorQuantizer` modules.
 
@@ -1268,7 +1338,7 @@ class SequentialQuantizer(nn.Sequential):
 
     """
 
-    _delegated_properties = ["fake_quant", "is_enabled"]
+    _delegated_properties = ["fake_quant", "is_enabled", "amax"]
     _delegated_methods = [
         "reset_amax",
         "disable",

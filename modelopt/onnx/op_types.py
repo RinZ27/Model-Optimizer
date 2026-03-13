@@ -367,3 +367,44 @@ def get_set_ops():
         "Unique",
         "NonZero",
     }
+
+
+def get_symmetric_ops():
+    """Returns set of commutative/symmetric operations where operand order doesn't matter."""
+    return {
+        "Add",
+        "Mul",
+        "And",
+        "Or",
+        "Xor",
+        "Equal",
+        "Max",
+        "Min",
+        "Sum",
+        "Mean",
+        "BitwiseAnd",
+        "BitwiseOr",
+        "BitwiseXor",
+    }
+
+
+def get_activation_ops():
+    """Returns set of activation operations."""
+    return {
+        "Relu",
+        "LeakyRelu",
+        "PRelu",
+        "Elu",
+        "Selu",
+        "ThresholdedRelu",
+        "Sigmoid",
+        "Tanh",
+        "HardSigmoid",
+        "Softmax",
+        "LogSoftmax",
+        "Clip",
+        "Softplus",
+        "Softsign",
+        "Swish",
+        "HardSwish",
+    }
