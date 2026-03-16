@@ -208,9 +208,10 @@ def build_quant_cfg(
         f"Unsupported quantization format: {qformat} with {kv_cache_qformat} KV cache"
     )
 
-    quant_cfg = copy.deepcopy(quant_cfg_choices[qformat])
+    quant_cfg = quant_cfg_choices[qformat]
 
     if "awq" in qformat:
+        quant_cfg = copy.deepcopy(quant_cfg_choices[qformat])
         weight_quantizer = quant_cfg["quant_cfg"]["*weight_quantizer"]
         if isinstance(weight_quantizer, list):
             weight_quantizer = weight_quantizer[0]
