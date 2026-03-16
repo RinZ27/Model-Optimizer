@@ -15,6 +15,7 @@
 
 """Unittests for AWQ, SVDQuant, and calibration module filtering"""
 
+import copy
 from functools import partial
 
 import torch
@@ -504,21 +505,43 @@ def test_smoothquant_include_modules():
 
 
 def test_filter_via_config_api():
-    """exclude_modules passed through the calibrate() config dict API works correctly."""
-    model, data = _make_quantized_mlp()
+    """calib_exclude/include_modules embedded in the algorithm config dict work end-to-end.
 
-    # Record amax of excluded layer
-    amax_net4_before = _get_weight_amax(model, "net.4")
+    This is the intended usage: users set these fields directly in the algorithm dict of their
+    quantization config rather than passing them as separate CLI arguments.
+    """
+    torch.manual_seed(42)
+    model = _SimpleMLP()
+    data = [torch.randn(4, 16)]
 
-    mtq.calibrate(
-        model,
-        algorithm={"method": "mse", "calib_exclude_modules": ["*net.4*"]},
-        forward_loop=partial(forward_loop, dataloader=data),
+    # Intended usage: embed calib_exclude_modules in the algorithm dict of the quant config.
+    quant_cfg = copy.deepcopy(INT8_CFG)
+    quant_cfg["algorithm"] = {"method": "max", "calib_exclude_modules": ["*net.4*"]}
+    model = mtq.quantize(model, quant_cfg, partial(forward_loop, dataloader=data))
+
+    modules = dict(model.named_modules())
+    # net.0 and net.2 were calibrated — _amax buffer should be registered.
+    assert hasattr(modules["net.0"].weight_quantizer, "_amax")
+    assert hasattr(modules["net.2"].weight_quantizer, "_amax")
+    # net.4 was excluded — calibrator never ran, so _amax buffer is absent.
+    assert not hasattr(modules["net.4"].weight_quantizer, "_amax"), (
+        "net.4 was excluded from calibration so its _amax buffer should not be registered"
     )
 
-    # net.4 should be untouched
-    assert torch.allclose(amax_net4_before, _get_weight_amax(model, "net.4")), (
-        "Excluded module net.4 should have unchanged amax via config API"
+    # include_modules variant: only net.0 is calibrated.
+    torch.manual_seed(42)
+    model2 = _SimpleMLP()
+    quant_cfg2 = copy.deepcopy(INT8_CFG)
+    quant_cfg2["algorithm"] = {"method": "max", "calib_include_modules": ["net.0"]}
+    model2 = mtq.quantize(model2, quant_cfg2, partial(forward_loop, dataloader=data))
+
+    modules2 = dict(model2.named_modules())
+    assert hasattr(modules2["net.0"].weight_quantizer, "_amax")
+    assert not hasattr(modules2["net.2"].weight_quantizer, "_amax"), (
+        "net.2 was not included in calibration so its _amax buffer should not be registered"
+    )
+    assert not hasattr(modules2["net.4"].weight_quantizer, "_amax"), (
+        "net.4 was not included in calibration so its _amax buffer should not be registered"
     )
 
 
