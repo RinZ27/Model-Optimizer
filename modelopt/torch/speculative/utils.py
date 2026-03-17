@@ -484,21 +484,65 @@ def enable_cp_ttt_patch():
             modelopt.torch.speculative.plugins.transformers.ENABLE_CP_TTT_PATCH = False
 
 
-def load_vlm_or_llm_with_kwargs(model_name_or_path: str, **kwargs):
-    """Load a VLM or LLM with kwargs. Returns the model and model config."""
+def load_vlm_or_llm(
+    model_name_or_path: str,
+    use_offline_training: bool = False,
+    fake_base_args=None,
+    torch_dtype: str | torch.dtype | None = None,
+    device_map: str | None = None,
+    trust_remote_code: bool = False,
+):
+    """Load a VLM or LLM. Returns the model.
+
+    When ``use_offline_training=True`` and ``fake_base_args.use_fake_base_model=True``, returns a
+    :class:`~modelopt.torch.speculative.plugins.modeling_fakebase.FakeBaseModel` containing only
+    ``lm_head`` and ``embed_tokens``. Otherwise, falls back to loading with
+    ``num_hidden_layers=0`` for memory efficiency.
+
+    Args:
+        model_name_or_path: Local path or HuggingFace repo ID of the model.
+        use_offline_training: Whether to load a memory-efficient model for offline training.
+        fake_base_args: Optional
+            :class:`~modelopt.torch.speculative.plugins.modeling_fakebase.FakeBaseArguments`.
+            If provided and ``use_offline_training=True``, a
+            :class:`~modelopt.torch.speculative.plugins.modeling_fakebase.FakeBaseModel` is
+            returned instead of the full model.
+        torch_dtype: dtype to use when loading the model.
+        device_map: Device map passed to ``from_pretrained``.
+        trust_remote_code: Whether to trust remote code.
+    """
+    if use_offline_training and fake_base_args is not None and fake_base_args.use_fake_base_model:
+        from modelopt.torch.speculative.plugins.modeling_fakebase import FakeBaseModel
+
+        return FakeBaseModel(model_name_or_path, fake_base_args)
+
     model_config = transformers.AutoConfig.from_pretrained(
-        model_name_or_path, trust_remote_code=True
+        model_name_or_path, trust_remote_code=trust_remote_code
     )
     if "vl" in model_config.model_type.lower():
         model_cls = transformers.AutoModelForVision2Seq
     else:
         model_cls = transformers.AutoModelForCausalLM
 
-    if kwargs.get("num_hidden_layers") == 0:
+    extra = {}
+    if use_offline_training:
+        extra["num_hidden_layers"] = 0
         if hasattr(model_config, "layer_types"):
-            kwargs["layer_types"] = []
+            extra["layer_types"] = []
 
-    return model_config, model_cls.from_pretrained(model_name_or_path, **kwargs)
+    model = model_cls.from_pretrained(
+        model_name_or_path,
+        trust_remote_code=trust_remote_code,
+        torch_dtype=torch_dtype,
+        device_map=device_map,
+        **extra,
+    )
+
+    if use_offline_training:
+        # Preserve the original layer count since we loaded with num_hidden_layers=0
+        model.config.num_orig_hidden_layers = model_config.num_hidden_layers
+
+    return model
 
 
 @contextlib.contextmanager

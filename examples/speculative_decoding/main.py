@@ -47,10 +47,8 @@ from transformers.trainer_utils import get_last_checkpoint
 
 import modelopt.torch.opt as mto
 import modelopt.torch.speculative as mtsp
-from modelopt.torch.speculative.utils import (
-    load_vlm_or_llm_with_kwargs,
-    patch_transformers5_params_loading,
-)
+from modelopt.torch.speculative.plugins.modeling_fakebase import FakeBaseArguments
+from modelopt.torch.speculative.utils import load_vlm_or_llm, patch_transformers5_params_loading
 from modelopt.torch.utils import print_rank_0
 
 torch.manual_seed(0)
@@ -140,9 +138,10 @@ def train():
             TrainingArguments,
             MedusaArguments,
             EagleArguments,
+            FakeBaseArguments,
         )
     )
-    model_args, data_args, training_args, medusa_args, eagle_args = (
+    model_args, data_args, training_args, medusa_args, eagle_args, fake_base_args = (
         parser.parse_args_into_dataclasses()
     )
     training_args.parallelism_config = ParallelismConfig(
@@ -169,25 +168,19 @@ def train():
 
     if checkpoint:
         with patch_transformers5_params_loading():
-            _, model = load_vlm_or_llm_with_kwargs(
-                checkpoint, torch_dtype="auto", trust_remote_code=True
-            )
+            model = load_vlm_or_llm(checkpoint, torch_dtype="auto", trust_remote_code=True)
         tokenizer = transformers.AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
     else:
         # To avoid OOM for large models, we load and convert model on CPU first.
         # Model will be moved to GPU during HF trainer.init().
-        offline_kwargs = {"num_hidden_layers": 0} if use_offline_training else {}
-        model_config, model = load_vlm_or_llm_with_kwargs(
+        model = load_vlm_or_llm(
             model_args.model_name_or_path,
+            use_offline_training=use_offline_training,
+            fake_base_args=fake_base_args,
             torch_dtype="auto",
             device_map="cpu",
             trust_remote_code=True,
-            **offline_kwargs,
         )
-        if use_offline_training:
-            # When doing offline training, we need to set num_hidden_layers
-            # since we override it when loading the model for space savings
-            model.config.num_orig_hidden_layers = model_config.num_hidden_layers
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
             model_max_length=training_args.training_seq_len,

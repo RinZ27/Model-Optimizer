@@ -16,12 +16,55 @@
 """Lightweight fake base model for offline speculative decoding training."""
 
 import json
+import os
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
-from huggingface_hub import hf_hub_download
+import transformers
 from safetensors.torch import load_file as safetensors_load_file
 from transformers import PretrainedConfig, PreTrainedModel
+
+
+@dataclass
+class FakeBaseArguments:
+    """Arguments for FakeBaseModel used during offline speculative decoding training.
+
+    Pass ``--use_fake_base_model`` to enable. Override the default weight key names for models
+    that use a non-standard layout (e.g. VLMs with a ``language_model`` prefix).
+    """
+
+    use_fake_base_model: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Use FakeBaseModel for offline training instead of loading full model weights. "
+                "Only effective when --offline_data_path is set."
+            )
+        },
+    )
+    lm_head_key: str = field(
+        default="lm_head.weight",
+        metadata={"help": "Safetensors key for the lm_head weight in the checkpoint."},
+    )
+    embed_tokens_key: str = field(
+        default="model.embed_tokens.weight",
+        metadata={"help": "Safetensors key for the embed_tokens weight in the checkpoint."},
+    )
+    index_filename: str = field(
+        default="model.safetensors.index.json",
+        metadata={"help": "Name of the sharded safetensors index JSON file."},
+    )
+    base_config_attr: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Attribute name on model_config to use as the base config "
+                "(e.g. 'text_config', 'language_config'). "
+                "If None, model_config itself is used."
+            )
+        },
+    )
 
 
 class FakeBaseConfig(PretrainedConfig):
@@ -51,110 +94,80 @@ class FakeBaseConfig(PretrainedConfig):
 class FakeBaseModel(PreTrainedModel):
     """Minimal base model for offline speculative decoding.
 
-    Contains only lm_head, embed_tokens, and necessary configs.
+    Contains only ``lm_head``, ``embed_tokens``, and the minimal config needed by the EAGLE
+    training loop. The full model weights are never loaded, keeping memory usage low.
 
-    This lightweight class should works ootb for convert, train, save/reload, and
-    export in offline speculative decoding workflow, while allowing:
-    1. Faster initialization and loading by omitting full model layers.
-    2. Compatibility with cases where standard HuggingFace loading is incomplete or unsupported.
-
-    Subclasses should override/define the following attributes:
-        SOURCE_HF_REPO (str): HuggingFace repository ID for weight retrieval.
-        INDEX_FILENAME (str): Name of the JSON file listing sharded weight files.
-        LM_HEAD_KEY (str): Key for the language modeling head in the safetensors state dict.
-        EMBED_TOKENS_KEY (str): Key for the embedding tokens in the safetensors state dict.
+    Weights are loaded from a local HuggingFace checkpoint directory. The weight key names
+    default to standard LLaMA-style paths; override ``lm_head_key`` and ``embed_tokens_key``
+    for models with a different layout (e.g. VLMs with a ``language_model`` prefix).
     """
 
     config_class = FakeBaseConfig
 
-    # Default values; subclasses should override as needed.
-    SOURCE_HF_REPO: str = None
-    INDEX_FILENAME: str = "model.safetensors.index.json"
-    LM_HEAD_KEY: str = "lm_head.weight"
-    EMBED_TOKENS_KEY: str = "model.embed_tokens.weight"
-
-    def __init__(self, config: FakeBaseConfig):
-        """Initialize FakeBaseModel and download lm_head/embed_tokens weights from HuggingFace.
+    def __init__(self, source: str, args: "FakeBaseArguments"):
+        """Load lm_head and embed_tokens from a local HuggingFace checkpoint directory.
 
         Args:
-            config (FakeBaseConfig): Model configuration.
+            source: Path to a local HuggingFace checkpoint directory.
+            args: :class:`FakeBaseArguments` controlling key names and config lookup.
         """
-        super().__init__(config)
-        self.config = config
+        model_config = transformers.AutoConfig.from_pretrained(source)
+        base_cfg = (
+            getattr(model_config, args.base_config_attr) if args.base_config_attr else model_config
+        )
+        hf_config = FakeBaseConfig(
+            num_hidden_layers=getattr(base_cfg, "num_hidden_layers", None),
+            hidden_size=getattr(base_cfg, "hidden_size", None),
+            vocab_size=getattr(base_cfg, "vocab_size", None),
+            max_position_embeddings=getattr(base_cfg, "max_position_embeddings", None),
+            dtype=getattr(base_cfg, "dtype", torch.bfloat16),
+            tie_word_embeddings=getattr(base_cfg, "tie_word_embeddings", False),
+        )
+        super().__init__(hf_config)
         self.model = nn.Module()
         self.model.layers = nn.ModuleList()
-        self.model.dtype = config.dtype
-        self.embed_tokens = nn.Embedding(self.config.vocab_size, self.config.hidden_size)
-        self.lm_head = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=False)
+        self.model.dtype = hf_config.dtype
+        self.embed_tokens = nn.Embedding(hf_config.vocab_size, hf_config.hidden_size)
+        self.lm_head = nn.Linear(hf_config.hidden_size, hf_config.vocab_size, bias=False)
 
         try:
-            lm_head_w, embed_tokens_w = self._download_lm_head_and_embed_tokens()
-            assert lm_head_w.shape == (self.config.vocab_size, self.config.hidden_size)
-            assert embed_tokens_w.shape == (self.config.vocab_size, self.config.hidden_size)
+            lm_head_w, embed_tokens_w = self._load_weights(
+                source, args.lm_head_key, args.embed_tokens_key, args.index_filename
+            )
+            assert lm_head_w.shape == (hf_config.vocab_size, hf_config.hidden_size)
+            assert embed_tokens_w.shape == (hf_config.vocab_size, hf_config.hidden_size)
             self.lm_head.weight.data.copy_(lm_head_w)
             self.embed_tokens.weight.data.copy_(embed_tokens_w)
         except Exception as e:
             raise ValueError(f"Failed to initialize lm_head and embed_tokens: {e}")
 
-    @classmethod
-    def from_base_config(cls, base_config: PretrainedConfig):
-        """Create a FakeBaseModel instance using a configuration from a full, real model.
+    def _load_weights(
+        self,
+        source: str,
+        lm_head_key: str,
+        embed_tokens_key: str,
+        index_filename: str,
+    ):
+        """Load lm_head and embed_tokens weights from a local checkpoint directory."""
+        index_path = os.path.join(source, index_filename)
 
-        Args:
-            base_config (PretrainedConfig): The original model configuration.
+        if os.path.isfile(index_path):
+            with open(index_path) as f:
+                index_data = json.load(f)
+            weight_map = index_data.get("weight_map", {})
+            lm_head_file = weight_map.get(lm_head_key)
+            embed_tokens_file = weight_map.get(embed_tokens_key)
+            if not lm_head_file or not embed_tokens_file:
+                raise RuntimeError(f"{lm_head_key} or {embed_tokens_key} not found in index!")
+            lm_head_state = safetensors_load_file(os.path.join(source, lm_head_file), device="cpu")
+            embed_tokens_state = safetensors_load_file(
+                os.path.join(source, embed_tokens_file), device="cpu"
+            )
+        else:
+            raise FileNotFoundError(f"No {index_filename} found in {source!r}.")
 
-        Returns:
-            FakeBaseModel: A new instance with the minimal configuration.
-        """
-        config_params = {
-            "num_hidden_layers": getattr(base_config, "num_hidden_layers", None),
-            "hidden_size": getattr(base_config, "hidden_size", None),
-            "vocab_size": getattr(base_config, "vocab_size", None),
-            "max_position_embeddings": getattr(base_config, "max_position_embeddings", None),
-            "dtype": getattr(base_config, "dtype", torch.bfloat16),
-            "tie_word_embeddings": getattr(base_config, "tie_word_embeddings", False),
-        }
-        return cls(FakeBaseConfig(**config_params))
-
-    def _download_lm_head_and_embed_tokens(self):
-        if self.SOURCE_HF_REPO is None:
-            raise ValueError("Set SOURCE_HF_REPO as a class attribute or in a subclass.")
-
-        index_json_file = hf_hub_download(
-            repo_id=self.SOURCE_HF_REPO,
-            filename=self.INDEX_FILENAME,
-        )
-        with open(index_json_file) as f:
-            index_data = json.load(f)
-
-        weight_map = index_data.get("weight_map", {})
-        lm_head_file = weight_map.get(self.LM_HEAD_KEY)
-        embed_tokens_file = weight_map.get(self.EMBED_TOKENS_KEY)
-
-        if not lm_head_file or not embed_tokens_file:
-            raise RuntimeError(f"{self.LM_HEAD_KEY} or {self.EMBED_TOKENS_KEY} not found in index!")
-
-        lm_head_shard_file = hf_hub_download(repo_id=self.SOURCE_HF_REPO, filename=lm_head_file)
-        embed_tokens_shard_file = hf_hub_download(
-            repo_id=self.SOURCE_HF_REPO, filename=embed_tokens_file
-        )
-
-        lm_head_state = safetensors_load_file(lm_head_shard_file, device="cpu")
-        embed_tokens_state = safetensors_load_file(embed_tokens_shard_file, device="cpu")
-
-        lm_head_weight = lm_head_state[self.LM_HEAD_KEY]
-        embed_tokens_weight = embed_tokens_state[self.EMBED_TOKENS_KEY]
-
-        return lm_head_weight, embed_tokens_weight
+        return lm_head_state[lm_head_key], embed_tokens_state[embed_tokens_key]
 
     def forward(self, *args, **kwargs):
         """Not implemented: FakeBaseModel omits full model weights and cannot run inference."""
         raise NotImplementedError("FakeBaseModel forward is not implemented.")
-
-
-class KimiK25FakeBaseModel(FakeBaseModel):
-    """FakeBaseModel subclass tailored for Kimi-K2.5."""
-
-    SOURCE_HF_REPO = "moonshotai/Kimi-K2.5"
-    LM_HEAD_KEY = "language_model.lm_head.weight"
-    EMBED_TOKENS_KEY = "language_model.model.embed_tokens.weight"
